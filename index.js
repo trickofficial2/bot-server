@@ -6,11 +6,9 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// সরাসরি Turso-র অফিশিয়াল ডিরেক্ট পাইপলাইন API
 const TURSO_URL = "https://mybotdb-santo1.aws-ap-south-1.turso.io/v2/pipeline";
 const TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTA3ODEwNjksImlkIjoiMDFhMGYyZGQtZWYwMS03MmRlLTgzN2YtY2RlMjEyZjVlYTRkIiwia2lkIjoiRFNyRWttN3FMb0ZmSTUxenI2SDNidEpUWUFKMDhSYm9ES2V4OGlVNWtZOCIsInJpZCI6ImNlODkwZGMwLWZhZDEtNGQzMy1iNDgwLTZmZThjOGUwOTdhOCJ9.ayzLRsARR6ai8HihuDVKFhmkoWnQWGw8OIjyybkzrXPKU-5QR85tpP_60MXBC6DZbMq8f3AgMpK_ETAm36wyCQ";
 
-// Turso-তে ডিরেক্ট কুয়েরি চালানোর ফাংশন
 async function queryTurso(sql, args = []) {
   const stmtArgs = args.map(arg => ({
     type: typeof arg === 'number' ? 'integer' : 'text',
@@ -49,7 +47,6 @@ async function queryTurso(sql, args = []) {
   return [];
 }
 
-// টেবিল ইনিশিয়ালাইজ করা
 async function initDB() {
   await queryTurso(`
     CREATE TABLE IF NOT EXISTS bots (
@@ -73,7 +70,7 @@ app.get('/', (req, res) => {
   res.send('Telegram Bot Server is Running smoothly!');
 });
 
-// ১. বটের তালিকা পাওয়া
+// বটের তালিকা
 app.get('/api/bots', async (req, res) => {
   try {
     await initDB();
@@ -84,7 +81,7 @@ app.get('/api/bots', async (req, res) => {
   }
 });
 
-// ২. নতুন বট যুক্ত করা
+// নতুন বট যুক্ত
 app.post('/api/bots', async (req, res) => {
   const { name, token } = req.body;
   if (!name || !token) return res.status(400).json({ success: false, error: "Name and Token required" });
@@ -93,7 +90,6 @@ app.post('/api/bots', async (req, res) => {
     await initDB();
     const serverUrl = "https://bot-server-rho.vercel.app";
 
-    // টেলিগ্রামে ওয়েব হুক সেট করা
     const webhookRes = await fetch(`https://api.telegram.org/bot${token}/setWebhook?url=${serverUrl}/webhook/${token}`);
     const webhookData = await webhookRes.json();
 
@@ -101,16 +97,28 @@ app.post('/api/bots', async (req, res) => {
       return res.status(400).json({ success: false, error: webhookData.description || "Invalid Bot Token" });
     }
 
-    // ডাটাবেজে বট সেভ করা
     await queryTurso("INSERT OR REPLACE INTO bots (name, token) VALUES (?, ?);", [name, token]);
-
     res.json({ success: true, message: "Bot connected successfully!" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ৩. টেলিগ্রাম অটো রিপ্লাই
+// কমান্ড সেভ করা (অ্যাপ থেকে)
+app.post('/api/commands', async (req, res) => {
+  const { bot_token, trigger, response } = req.body;
+  if (!bot_token || !trigger || !response) return res.status(400).json({ success: false, error: "All fields required" });
+
+  try {
+    await initDB();
+    await queryTurso("INSERT INTO commands (bot_token, trigger, response) VALUES (?, ?, ?);", [bot_token, trigger.trim().toLowerCase(), response]);
+    res.json({ success: true, message: "Command saved!" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// টেলিগ্রাম ওয়েব হুক রেসপন্স
 app.post('/webhook/:token', async (req, res) => {
   const { token } = req.params;
   const update = req.body;
@@ -135,4 +143,4 @@ app.post('/webhook/:token', async (req, res) => {
 
 module.exports = app;
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server on ${PORT}`));
