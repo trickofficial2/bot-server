@@ -7,32 +7,29 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
+// সরাসরি আপনার Turso কানেকশন
 const db = createClient({
-  url: process.env.TURSO_DATABASE_URL,
-  authToken: process.env.TURSO_AUTH_TOKEN,
+  url: "libsql://mybotdb-santo1.aws-ap-south-1.turso.io",
+  authToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTA3ODEwNjksImlkIjoiMDFhMGYyZGQtZWYwMS03MmRlLTgzN2YtY2RlMjEyZjVlYTRkIiwia2lkIjoiRFNyRWttN3FMb0ZmSTUxenI2SDNidEpUWUFKMDhSYm9ES2V4OGlVNWtZOCIsInJpZCI6ImNlODkwZGMwLWZhZDEtNGQzMy1iNDgwLTZmZThjOGUwOTdhOCJ9.ayzLRsARR6ai8HihuDVKFhmkoWnQWGw8OIjyybkzrXPKU-5QR85tpP_60MXBC6DZbMq8f3AgMpK_ETAm36wyCQ",
 });
 
 async function initDB() {
-  try {
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS bots (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        token TEXT UNIQUE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS commands (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bot_token TEXT,
-        trigger TEXT,
-        response TEXT
-      );
-    `);
-  } catch (e) {
-    console.error("DB Init Error:", e);
-  }
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS bots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      token TEXT UNIQUE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS commands (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_token TEXT,
+      trigger TEXT,
+      response TEXT
+    );
+  `);
 }
 
 app.get('/', (req, res) => {
@@ -55,8 +52,7 @@ app.post('/api/bots', async (req, res) => {
 
   try {
     await initDB();
-    const host = req.headers['x-forwarded-host'] || req.headers.host || 'bot-server-rho.vercel.app';
-    const serverUrl = `https://${host}`;
+    const serverUrl = "https://bot-server-rho.vercel.app";
     
     // Telegram Webhook Setup
     const webhookRes = await fetch(`https://api.telegram.org/bot${token}/setWebhook?url=${serverUrl}/webhook/${token}`);
@@ -71,7 +67,7 @@ app.post('/api/bots', async (req, res) => {
       args: [name, token]
     });
 
-    res.json({ success: true, message: "Bot added successfully!" });
+    res.json({ success: true, message: "Bot connected successfully!" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
