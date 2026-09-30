@@ -56,19 +56,17 @@ async function initDB() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // buttons ফিল্ড সহ কমান্ড টেবিল
   await queryTurso(`
     CREATE TABLE IF NOT EXISTS commands (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       bot_token TEXT,
       trigger TEXT,
-      response TEXT
+      response TEXT,
+      buttons TEXT
     );
   `);
 }
-
-app.get('/', (req, res) => {
-  res.send('Telegram Bot Server is Running smoothly!');
-});
 
 // বটের তালিকা
 app.get('/api/bots', async (req, res) => {
@@ -76,6 +74,18 @@ app.get('/api/bots', async (req, res) => {
     await initDB();
     const rows = await queryTurso("SELECT id, name, token FROM bots ORDER BY id DESC;");
     res.json({ success: true, bots: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// নির্দিষ্ট বটের সব কমান্ড লোড করা
+app.get('/api/commands', async (req, res) => {
+  const { token } = req.query;
+  try {
+    await initDB();
+    const rows = await queryTurso("SELECT id, trigger, response, buttons FROM commands WHERE bot_token = ? ORDER BY id DESC;", [token]);
+    res.json({ success: true, commands: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -89,7 +99,6 @@ app.post('/api/bots', async (req, res) => {
   try {
     await initDB();
     const serverUrl = "https://bot-server-rho.vercel.app";
-
     const webhookRes = await fetch(`https://api.telegram.org/bot${token}/setWebhook?url=${serverUrl}/webhook/${token}`);
     const webhookData = await webhookRes.json();
 
@@ -104,21 +113,26 @@ app.post('/api/bots', async (req, res) => {
   }
 });
 
-// কমান্ড সেভ করা (অ্যাপ থেকে)
+// কমান্ড সেভ অথবা আপডেট করা (UPDATE / INSERT)
 app.post('/api/commands', async (req, res) => {
-  const { bot_token, trigger, response } = req.body;
-  if (!bot_token || !trigger || !response) return res.status(400).json({ success: false, error: "All fields required" });
+  const { bot_token, trigger, response, buttons } = req.body;
+  if (!bot_token || !trigger || !response) return res.status(400).json({ success: false, error: "Trigger & Response required" });
+
+  const cleanTrigger = trigger.trim().toLowerCase();
+  const btnData = buttons ? buttons.trim() : "";
 
   try {
     await initDB();
-    await queryTurso("INSERT INTO commands (bot_token, trigger, response) VALUES (?, ?, ?);", [bot_token, trigger.trim().toLowerCase(), response]);
-    res.json({ success: true, message: "Command saved!" });
+    // আগের কমান্ড থাকলে মুছে নতুন করে সেভ করবে (Update Effect)
+    await queryTurso("DELETE FROM commands WHERE bot_token = ? AND trigger = ?;", [bot_token, cleanTrigger]);
+    await queryTurso("INSERT INTO commands (bot_token, trigger, response, buttons) VALUES (?, ?, ?, ?);", [bot_token, cleanTrigger, response, btnData]);
+    res.json({ success: true, message: "Command saved successfully!" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// টেলিগ্রাম ওয়েব হুক রেসপন্স
+// টেলিগ্রাম ওয়েব হুক (বাটন সহ মেসেজ পাঠানো)
 app.post('/webhook/:token', async (req, res) => {
   const { token } = req.params;
   const update = req.body;
@@ -127,13 +141,37 @@ app.post('/webhook/:token', async (req, res) => {
     const chatId = update.message.chat.id;
     const userText = update.message.text.trim().toLowerCase();
 
-    const rows = await queryTurso("SELECT response FROM commands WHERE bot_token = ? AND trigger = ?;", [token, userText]);
+    const rows = await queryTurso("SELECT response, buttons FROM commands WHERE bot_token = ? AND trigger = ?;", [token, userText]);
 
     if (rows.length > 0) {
+      const botReply = rows[0].response;
+      const rawButtons = rows[0].buttons;
+
+      const payload = {
+        chat_id: chatId,
+        text: botReply
+      };
+
+      // যদি বাটন যুক্ত করা থাকে, তবে স্ক্রিনশটের মতো কীবোর্ড তৈরি হবে
+      if (rawButtons && rawButtons.length > 0) {
+        const keyboard = [];
+        const lines = rawButtons.split('\n'); // প্রতি লাইন একটি করে রো (Row)
+        for (const line of lines) {
+          if (line.trim().length > 0) {
+            const btns = line.split(',').map(b => ({ text: b.trim() }));
+            keyboard.push(btns);
+          }
+        }
+        payload.reply_markup = {
+          keyboard: keyboard,
+          resize_keyboard: true
+        };
+      }
+
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: rows[0].response })
+        body: JSON.stringify(payload)
       });
     }
   }
