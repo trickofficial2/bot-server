@@ -31,9 +31,7 @@ async function queryTurso(sql, args = []) {
 
   const data = await res.json();
   const first = data.results && data.results[0];
-  if (first && first.type === 'error') {
-    throw new Error(first.error.message);
-  }
+  if (first && first.type === 'error') throw new Error(first.error.message);
 
   if (first && first.response && first.response.result) {
     const r = first.response.result;
@@ -65,7 +63,6 @@ async function initDB() {
       buttons TEXT
     );
   `);
-  // BJS ভ্যারিয়েবল ও প্রোপার্টি সেভ করার টেবিল
   await queryTurso(`
     CREATE TABLE IF NOT EXISTS properties (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,9 +74,22 @@ async function initDB() {
   `);
 }
 
-app.get('/', (req, res) => res.send('Bots.Business Engine is Running!'));
+// টেলিগ্রাম API কল করার হেল্পার
+async function callTelegram(token, method, payload) {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
 
-// বটের তালিকা
+app.get('/', (req, res) => res.send('Bots.Business Engine is Active!'));
+
 app.get('/api/bots', async (req, res) => {
   try {
     await initDB();
@@ -90,7 +100,6 @@ app.get('/api/bots', async (req, res) => {
   }
 });
 
-// নতুন বট যুক্ত
 app.post('/api/bots', async (req, res) => {
   const { name, token } = req.body;
   if (!name || !token) return res.status(400).json({ success: false, error: "Name and Token required" });
@@ -101,9 +110,7 @@ app.post('/api/bots', async (req, res) => {
     const webhookRes = await fetch(`https://api.telegram.org/bot${token}/setWebhook?url=${serverUrl}/webhook/${token}`);
     const webhookData = await webhookRes.json();
 
-    if (!webhookData.ok) {
-      return res.status(400).json({ success: false, error: webhookData.description || "Invalid Bot Token" });
-    }
+    if (!webhookData.ok) return res.status(400).json({ success: false, error: webhookData.description || "Invalid Bot Token" });
 
     await queryTurso("INSERT OR REPLACE INTO bots (name, token) VALUES (?, ?);", [name, token]);
     res.json({ success: true, message: "Bot connected successfully!" });
@@ -112,20 +119,15 @@ app.post('/api/bots', async (req, res) => {
   }
 });
 
-// বটের নাম ও টোকেন আপডেট করা (Edit Bot)
 app.post('/api/bots/update', async (req, res) => {
   const { old_token, new_name, new_token } = req.body;
   try {
     await initDB();
     const serverUrl = "https://bot-server-rho.vercel.app";
-
-    // নতুন টোকেনে ওয়েব হুক সেট করা
     const webhookRes = await fetch(`https://api.telegram.org/bot${new_token}/setWebhook?url=${serverUrl}/webhook/${new_token}`);
     const webhookData = await webhookRes.json();
 
-    if (!webhookData.ok) {
-      return res.status(400).json({ success: false, error: "Invalid New Token" });
-    }
+    if (!webhookData.ok) return res.status(400).json({ success: false, error: "Invalid New Token" });
 
     if (old_token !== new_token) {
       await fetch(`https://api.telegram.org/bot${old_token}/deleteWebhook`);
@@ -140,7 +142,6 @@ app.post('/api/bots/update', async (req, res) => {
   }
 });
 
-// বট ডিলিট
 app.post('/api/bots/delete', async (req, res) => {
   const { token } = req.body;
   try {
@@ -155,7 +156,6 @@ app.post('/api/bots/delete', async (req, res) => {
   }
 });
 
-// কমান্ড তালিকা
 app.get('/api/commands', async (req, res) => {
   const { token } = req.query;
   try {
@@ -167,7 +167,6 @@ app.get('/api/commands', async (req, res) => {
   }
 });
 
-// কমান্ড সেভ করা (কোড বা টেক্সট)
 app.post('/api/commands', async (req, res) => {
   const { bot_token, trigger, response, buttons } = req.body;
   if (!bot_token || !trigger) return res.status(400).json({ success: false, error: "Trigger required" });
@@ -186,7 +185,6 @@ app.post('/api/commands', async (req, res) => {
   }
 });
 
-// কমান্ড ডিলিট
 app.post('/api/commands/delete', async (req, res) => {
   const { bot_token, trigger } = req.body;
   try {
@@ -198,7 +196,75 @@ app.post('/api/commands/delete', async (req, res) => {
   }
 });
 
-// টেলিগ্রাম মেসেজ হ্যান্ডলার (BJS কোড ও বাটন রান করা)
+// বটের মেসেজ ও BJS এক্সিকিউশন
+async function executeBotLogic(token, chatId, userId, triggerText, update) {
+  const rows = await queryTurso("SELECT response, buttons FROM commands WHERE bot_token = ? AND trigger = ?;", [token, triggerText]);
+  if (rows.length === 0) return;
+
+  const codeOrText = rows[0].response || "";
+  const rawButtons = rows[0].buttons || "";
+  const fullCode = (codeOrText.includes("Bot.") || codeOrText.includes("User.") || codeOrText.includes("Api.")) ? codeOrText : rawButtons;
+
+  if (fullCode && (fullCode.includes("Bot.") || fullCode.includes("User.") || fullCode.includes("Api."))) {
+    // সম্পূর্ণ Bots.Business এনভায়রনমেন্ট
+    const Bot = {
+      sendMessage: async (text, opts = {}) => {
+        const payload = { chat_id: chatId, text: String(text) };
+        if (opts.is_html) payload.parse_mode = 'HTML';
+        if (opts.parse_mode) payload.parse_mode = opts.parse_mode;
+        return await callTelegram(token, 'sendMessage', payload);
+      },
+      sendKeyboard: async (buttonsStr, text) => {
+        const keyboard = [];
+        for (const line of buttonsStr.split('\n')) {
+          if (line.trim().length > 0) keyboard.push(line.split(',').map(b => ({ text: b.trim() })));
+        }
+        return await callTelegram(token, 'sendMessage', {
+          chat_id: chatId,
+          text: String(text),
+          reply_markup: { keyboard: keyboard, resize_keyboard: true }
+        });
+      },
+      runCommand: async (cmd) => {
+        await executeBotLogic(token, chatId, userId, cmd.trim().toLowerCase(), update);
+      },
+      getProperty: (k, def) => def,
+      setProperty: async (k, v) => {}
+    };
+
+    const User = {
+      setProperty: async (k, v) => {},
+      getProperty: (k, def) => def
+    };
+
+    const Api = {
+      deleteMessage: async (opts) => await callTelegram(token, 'deleteMessage', { chat_id: opts.chat_id || chatId, message_id: opts.message_id }),
+      editMessageText: async (opts) => await callTelegram(token, 'editMessageText', { chat_id: opts.chat_id || chatId, message_id: opts.message_id, text: opts.text, parse_mode: opts.parse_mode || 'HTML' }),
+      sendMessage: async (opts) => await callTelegram(token, 'sendMessage', { chat_id: opts.chat_id || chatId, text: opts.text, parse_mode: opts.parse_mode || 'HTML' })
+    };
+
+    try {
+      const runFn = new Function('Bot', 'User', 'Api', 'request', 'chat', 'content', `return (async () => { ${fullCode} })();`);
+      await runFn(Bot, User, Api, update, { chatid: chatId }, "");
+    } catch (e) {
+      console.error("BJS Error:", e);
+    }
+  } else {
+    // সাধারণ টেক্সট ও কীবোর্ড বাটন
+    const payload = { chat_id: chatId, text: codeOrText };
+    if (rawButtons.length > 0) {
+      const keyboard = [];
+      for (const line of rawButtons.split('\n')) {
+        if (line.trim().length > 0) {
+          keyboard.push(line.split(',').map(b => ({ text: b.trim() })));
+        }
+      }
+      payload.reply_markup = { keyboard: keyboard, resize_keyboard: true };
+    }
+    await callTelegram(token, 'sendMessage', payload);
+  }
+}
+
 app.post('/webhook/:token', async (req, res) => {
   const { token } = req.params;
   const update = req.body;
@@ -207,69 +273,7 @@ app.post('/webhook/:token', async (req, res) => {
     const chatId = update.message.chat.id;
     const userId = String(update.message.from.id);
     const userText = update.message.text.trim().toLowerCase();
-
-    const rows = await queryTurso("SELECT response, buttons FROM commands WHERE bot_token = ? AND trigger = ?;", [token, userText]);
-
-    if (rows.length > 0) {
-      let codeOrText = rows[0].response || "";
-      const rawButtons = rows[0].buttons || "";
-
-      // যদি এতে কোড থাকে (বা ৩য় বক্সে কোড থাকে)
-      const fullCode = codeOrText.includes("Bot.") || codeOrText.includes("User.") ? codeOrText : rawButtons;
-
-      if (fullCode && (fullCode.includes("Bot.") || fullCode.includes("User."))) {
-        // BJS স্যান্ডবক্স তৈরি
-        const Bot = {
-          sendMessage: async (text, opts = {}) => {
-            const body = {
-              chat_id: chatId,
-              text: String(text)
-            };
-            if (opts.is_html) body.parse_mode = 'HTML';
-            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body)
-            });
-          },
-          getProperty: (key, defVal) => defVal,
-          setProperty: async (key, val) => {
-            await queryTurso("INSERT INTO properties (bot_token, user_id, prop_key, prop_value) VALUES (?, 'global', ?, ?);", [token, key, String(val)]);
-          }
-        };
-
-        const User = {
-          setProperty: async (key, val, type) => {
-            await queryTurso("INSERT INTO properties (bot_token, user_id, prop_key, prop_value) VALUES (?, ?, ?, ?);", [token, userId, key, String(val)]);
-          },
-          getProperty: (key, defVal) => defVal
-        };
-
-        try {
-          const runAsync = new Function('Bot', 'User', 'chatId', 'userId', `return (async () => { ${fullCode} })();`);
-          await runAsync(Bot, User, chatId, userId);
-        } catch (e) {
-          console.error("BJS Execution Error:", e);
-        }
-      } else {
-        // সাধারণ মেসেজ ও বাটন পাঠানো
-        const payload = { chat_id: chatId, text: codeOrText };
-        if (rawButtons.length > 0) {
-          const keyboard = [];
-          for (const line of rawButtons.split('\n')) {
-            if (line.trim().length > 0) {
-              keyboard.push(line.split(',').map(b => ({ text: b.trim() })));
-            }
-          }
-          payload.reply_markup = { keyboard: keyboard, resize_keyboard: true };
-        }
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-      }
-    }
+    await executeBotLogic(token, chatId, userId, userText, update);
   }
 
   res.sendStatus(200);
