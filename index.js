@@ -65,19 +65,21 @@ async function initDB() {
       buttons TEXT
     );
   `);
-  // যদি পুরনো টেবিল থাকে, তবে buttons কলাম যোগ করে নেওয়া
-  try {
-    await queryTurso("ALTER TABLE commands ADD COLUMN buttons TEXT;");
-  } catch (e) {
-    // Column already exists, ignore
-  }
+  // BJS ভ্যারিয়েবল ও প্রোপার্টি সেভ করার টেবিল
+  await queryTurso(`
+    CREATE TABLE IF NOT EXISTS properties (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_token TEXT,
+      user_id TEXT,
+      prop_key TEXT,
+      prop_value TEXT
+    );
+  `);
 }
 
-app.get('/', (req, res) => {
-  res.send('Telegram Bot Server is Running smoothly!');
-});
+app.get('/', (req, res) => res.send('Bots.Business Engine is Running!'));
 
-// ১. বটের তালিকা পাওয়া
+// বটের তালিকা
 app.get('/api/bots', async (req, res) => {
   try {
     await initDB();
@@ -88,19 +90,7 @@ app.get('/api/bots', async (req, res) => {
   }
 });
 
-// ২. বটের কমান্ড লিস্ট
-app.get('/api/commands', async (req, res) => {
-  const { token } = req.query;
-  try {
-    await initDB();
-    const rows = await queryTurso("SELECT id, trigger, response, buttons FROM commands WHERE bot_token = ? ORDER BY id DESC;", [token]);
-    res.json({ success: true, commands: rows });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ৩. নতুন বট যুক্ত করা
+// নতুন বট যুক্ত
 app.post('/api/bots', async (req, res) => {
   const { name, token } = req.body;
   if (!name || !token) return res.status(400).json({ success: false, error: "Name and Token required" });
@@ -122,15 +112,42 @@ app.post('/api/bots', async (req, res) => {
   }
 });
 
-// ৪. বট ডিলিট করা
+// বটের নাম ও টোকেন আপডেট করা (Edit Bot)
+app.post('/api/bots/update', async (req, res) => {
+  const { old_token, new_name, new_token } = req.body;
+  try {
+    await initDB();
+    const serverUrl = "https://bot-server-rho.vercel.app";
+
+    // নতুন টোকেনে ওয়েব হুক সেট করা
+    const webhookRes = await fetch(`https://api.telegram.org/bot${new_token}/setWebhook?url=${serverUrl}/webhook/${new_token}`);
+    const webhookData = await webhookRes.json();
+
+    if (!webhookData.ok) {
+      return res.status(400).json({ success: false, error: "Invalid New Token" });
+    }
+
+    if (old_token !== new_token) {
+      await fetch(`https://api.telegram.org/bot${old_token}/deleteWebhook`);
+      await queryTurso("UPDATE commands SET bot_token = ? WHERE bot_token = ?;", [new_token, old_token]);
+      await queryTurso("UPDATE properties SET bot_token = ? WHERE bot_token = ?;", [new_token, old_token]);
+    }
+
+    await queryTurso("UPDATE bots SET name = ?, token = ? WHERE token = ?;", [new_name, new_token, old_token]);
+    res.json({ success: true, message: "Bot updated successfully!" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// বট ডিলিট
 app.post('/api/bots/delete', async (req, res) => {
   const { token } = req.body;
   try {
     await initDB();
-    // টেলিগ্রাম থেকে ওয়েবহুক ডিলিট
     await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
-    // ডাটাবেজ থেকে বট ও তার সব কমান্ড ডিলিট
     await queryTurso("DELETE FROM commands WHERE bot_token = ?;", [token]);
+    await queryTurso("DELETE FROM properties WHERE bot_token = ?;", [token]);
     await queryTurso("DELETE FROM bots WHERE token = ?;", [token]);
     res.json({ success: true, message: "Bot deleted successfully" });
   } catch (err) {
@@ -138,25 +155,38 @@ app.post('/api/bots/delete', async (req, res) => {
   }
 });
 
-// ৫. কমান্ড সেভ বা আপডেট করা
+// কমান্ড তালিকা
+app.get('/api/commands', async (req, res) => {
+  const { token } = req.query;
+  try {
+    await initDB();
+    const rows = await queryTurso("SELECT id, trigger, response, buttons FROM commands WHERE bot_token = ? ORDER BY id DESC;", [token]);
+    res.json({ success: true, commands: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// কমান্ড সেভ করা (কোড বা টেক্সট)
 app.post('/api/commands', async (req, res) => {
   const { bot_token, trigger, response, buttons } = req.body;
-  if (!bot_token || !trigger || !response) return res.status(400).json({ success: false, error: "Trigger & Response required" });
+  if (!bot_token || !trigger) return res.status(400).json({ success: false, error: "Trigger required" });
 
   const cleanTrigger = trigger.trim().toLowerCase();
+  const respData = response ? response.trim() : "";
   const btnData = buttons ? buttons.trim() : "";
 
   try {
     await initDB();
     await queryTurso("DELETE FROM commands WHERE bot_token = ? AND trigger = ?;", [bot_token, cleanTrigger]);
-    await queryTurso("INSERT INTO commands (bot_token, trigger, response, buttons) VALUES (?, ?, ?, ?);", [bot_token, cleanTrigger, response, btnData]);
+    await queryTurso("INSERT INTO commands (bot_token, trigger, response, buttons) VALUES (?, ?, ?, ?);", [bot_token, cleanTrigger, respData, btnData]);
     res.json({ success: true, message: "Command saved successfully!" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ৬. কমান্ড ডিলিট করা
+// কমান্ড ডিলিট
 app.post('/api/commands/delete', async (req, res) => {
   const { bot_token, trigger } = req.body;
   try {
@@ -168,40 +198,77 @@ app.post('/api/commands/delete', async (req, res) => {
   }
 });
 
-// ৭. টেলিগ্রাম মেসেজ হ্যান্ডলার
+// টেলিগ্রাম মেসেজ হ্যান্ডলার (BJS কোড ও বাটন রান করা)
 app.post('/webhook/:token', async (req, res) => {
   const { token } = req.params;
   const update = req.body;
 
   if (update.message && update.message.text) {
     const chatId = update.message.chat.id;
+    const userId = String(update.message.from.id);
     const userText = update.message.text.trim().toLowerCase();
 
     const rows = await queryTurso("SELECT response, buttons FROM commands WHERE bot_token = ? AND trigger = ?;", [token, userText]);
 
     if (rows.length > 0) {
-      const botReply = rows[0].response;
-      const rawButtons = rows[0].buttons;
+      let codeOrText = rows[0].response || "";
+      const rawButtons = rows[0].buttons || "";
 
-      const payload = { chat_id: chatId, text: botReply };
+      // যদি এতে কোড থাকে (বা ৩য় বক্সে কোড থাকে)
+      const fullCode = codeOrText.includes("Bot.") || codeOrText.includes("User.") ? codeOrText : rawButtons;
 
-      if (rawButtons && rawButtons.length > 0) {
-        const keyboard = [];
-        const lines = rawButtons.split('\n');
-        for (const line of lines) {
-          if (line.trim().length > 0) {
-            const btns = line.split(',').map(b => ({ text: b.trim() }));
-            keyboard.push(btns);
+      if (fullCode && (fullCode.includes("Bot.") || fullCode.includes("User."))) {
+        // BJS স্যান্ডবক্স তৈরি
+        const Bot = {
+          sendMessage: async (text, opts = {}) => {
+            const body = {
+              chat_id: chatId,
+              text: String(text)
+            };
+            if (opts.is_html) body.parse_mode = 'HTML';
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+          },
+          getProperty: (key, defVal) => defVal,
+          setProperty: async (key, val) => {
+            await queryTurso("INSERT INTO properties (bot_token, user_id, prop_key, prop_value) VALUES (?, 'global', ?, ?);", [token, key, String(val)]);
           }
-        }
-        payload.reply_markup = { keyboard: keyboard, resize_keyboard: true };
-      }
+        };
 
-      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+        const User = {
+          setProperty: async (key, val, type) => {
+            await queryTurso("INSERT INTO properties (bot_token, user_id, prop_key, prop_value) VALUES (?, ?, ?, ?);", [token, userId, key, String(val)]);
+          },
+          getProperty: (key, defVal) => defVal
+        };
+
+        try {
+          const runAsync = new Function('Bot', 'User', 'chatId', 'userId', `return (async () => { ${fullCode} })();`);
+          await runAsync(Bot, User, chatId, userId);
+        } catch (e) {
+          console.error("BJS Execution Error:", e);
+        }
+      } else {
+        // সাধারণ মেসেজ ও বাটন পাঠানো
+        const payload = { chat_id: chatId, text: codeOrText };
+        if (rawButtons.length > 0) {
+          const keyboard = [];
+          for (const line of rawButtons.split('\n')) {
+            if (line.trim().length > 0) {
+              keyboard.push(line.split(',').map(b => ({ text: b.trim() })));
+            }
+          }
+          payload.reply_markup = { keyboard: keyboard, resize_keyboard: true };
+        }
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
     }
   }
 
