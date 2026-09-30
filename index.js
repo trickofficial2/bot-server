@@ -56,7 +56,6 @@ async function initDB() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  // buttons ফিল্ড সহ কমান্ড টেবিল
   await queryTurso(`
     CREATE TABLE IF NOT EXISTS commands (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,9 +65,19 @@ async function initDB() {
       buttons TEXT
     );
   `);
+  // যদি পুরনো টেবিল থাকে, তবে buttons কলাম যোগ করে নেওয়া
+  try {
+    await queryTurso("ALTER TABLE commands ADD COLUMN buttons TEXT;");
+  } catch (e) {
+    // Column already exists, ignore
+  }
 }
 
-// বটের তালিকা
+app.get('/', (req, res) => {
+  res.send('Telegram Bot Server is Running smoothly!');
+});
+
+// ১. বটের তালিকা পাওয়া
 app.get('/api/bots', async (req, res) => {
   try {
     await initDB();
@@ -79,7 +88,7 @@ app.get('/api/bots', async (req, res) => {
   }
 });
 
-// নির্দিষ্ট বটের সব কমান্ড লোড করা
+// ২. বটের কমান্ড লিস্ট
 app.get('/api/commands', async (req, res) => {
   const { token } = req.query;
   try {
@@ -91,7 +100,7 @@ app.get('/api/commands', async (req, res) => {
   }
 });
 
-// নতুন বট যুক্ত
+// ৩. নতুন বট যুক্ত করা
 app.post('/api/bots', async (req, res) => {
   const { name, token } = req.body;
   if (!name || !token) return res.status(400).json({ success: false, error: "Name and Token required" });
@@ -113,7 +122,23 @@ app.post('/api/bots', async (req, res) => {
   }
 });
 
-// কমান্ড সেভ অথবা আপডেট করা (UPDATE / INSERT)
+// ৪. বট ডিলিট করা
+app.post('/api/bots/delete', async (req, res) => {
+  const { token } = req.body;
+  try {
+    await initDB();
+    // টেলিগ্রাম থেকে ওয়েবহুক ডিলিট
+    await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
+    // ডাটাবেজ থেকে বট ও তার সব কমান্ড ডিলিট
+    await queryTurso("DELETE FROM commands WHERE bot_token = ?;", [token]);
+    await queryTurso("DELETE FROM bots WHERE token = ?;", [token]);
+    res.json({ success: true, message: "Bot deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ৫. কমান্ড সেভ বা আপডেট করা
 app.post('/api/commands', async (req, res) => {
   const { bot_token, trigger, response, buttons } = req.body;
   if (!bot_token || !trigger || !response) return res.status(400).json({ success: false, error: "Trigger & Response required" });
@@ -123,7 +148,6 @@ app.post('/api/commands', async (req, res) => {
 
   try {
     await initDB();
-    // আগের কমান্ড থাকলে মুছে নতুন করে সেভ করবে (Update Effect)
     await queryTurso("DELETE FROM commands WHERE bot_token = ? AND trigger = ?;", [bot_token, cleanTrigger]);
     await queryTurso("INSERT INTO commands (bot_token, trigger, response, buttons) VALUES (?, ?, ?, ?);", [bot_token, cleanTrigger, response, btnData]);
     res.json({ success: true, message: "Command saved successfully!" });
@@ -132,7 +156,19 @@ app.post('/api/commands', async (req, res) => {
   }
 });
 
-// টেলিগ্রাম ওয়েব হুক (বাটন সহ মেসেজ পাঠানো)
+// ৬. কমান্ড ডিলিট করা
+app.post('/api/commands/delete', async (req, res) => {
+  const { bot_token, trigger } = req.body;
+  try {
+    await initDB();
+    await queryTurso("DELETE FROM commands WHERE bot_token = ? AND trigger = ?;", [bot_token, trigger.trim().toLowerCase()]);
+    res.json({ success: true, message: "Command deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ৭. টেলিগ্রাম মেসেজ হ্যান্ডলার
 app.post('/webhook/:token', async (req, res) => {
   const { token } = req.params;
   const update = req.body;
@@ -147,25 +183,18 @@ app.post('/webhook/:token', async (req, res) => {
       const botReply = rows[0].response;
       const rawButtons = rows[0].buttons;
 
-      const payload = {
-        chat_id: chatId,
-        text: botReply
-      };
+      const payload = { chat_id: chatId, text: botReply };
 
-      // যদি বাটন যুক্ত করা থাকে, তবে স্ক্রিনশটের মতো কীবোর্ড তৈরি হবে
       if (rawButtons && rawButtons.length > 0) {
         const keyboard = [];
-        const lines = rawButtons.split('\n'); // প্রতি লাইন একটি করে রো (Row)
+        const lines = rawButtons.split('\n');
         for (const line of lines) {
           if (line.trim().length > 0) {
             const btns = line.split(',').map(b => ({ text: b.trim() }));
             keyboard.push(btns);
           }
         }
-        payload.reply_markup = {
-          keyboard: keyboard,
-          resize_keyboard: true
-        };
+        payload.reply_markup = { keyboard: keyboard, resize_keyboard: true };
       }
 
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
